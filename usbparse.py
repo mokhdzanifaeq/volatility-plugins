@@ -2,6 +2,7 @@
 
 import volatility.plugins.registry.registryapi as registryapi
 import volatility.plugins.common as common
+import volatility.utils as utils
 
 class UsbParse(common.AbstractWindowsCommand):
     "parse usb information from registry"
@@ -28,13 +29,13 @@ class UsbParse(common.AbstractWindowsCommand):
                 serial_part = serial.Name.split('&')
                 serial_no = serial_part[0] if len(serial_part) == 2 else serial.Name
                 val = self.regapi.reg_get_value(None, key = usbstor + "\\" + subkey.Name + "\\" + serial.Name, value = "FriendlyName")
-                if val != None:
-                    device["device_name"] = val.__str__()[:-1]
+                if val:
+                    device["device_name"] = utils.remove_unprintable(val)
                 val = self.regapi.reg_get_value(None, key = usbstor + "\\" + subkey.Name + "\\" + serial.Name, value = "ParentIdPrefix")
-                if val != None:
-                    device["parent_prefix_id"] = val
+                if val:
+                    device["parent_prefix_id"] = utils.remove_unprintable(val)
                 for properties in self.regapi.reg_get_all_subkeys(None, key = usbstor + "\\" + subkey.Name + "\\" + serial.Name + "\\Properties\\{83da6326-97a6-4088-9453-a1923f573b29}"):
-                    name = properties.Name.__str__()
+                    name = str(properties.Name)
                     if "0064" in name:
                         device["time"]["install_date"] = properties.LastWriteTime
                     elif "0065" in name:
@@ -48,11 +49,11 @@ class UsbParse(common.AbstractWindowsCommand):
     def USB(self):
         usb = self.regapi.reg_get_currentcontrolset() + "\\Enum\\USB"
         for subkey in self.regapi.reg_get_all_subkeys(None, key = usb):
-            name = subkey.Name.__str__()
-            if not "pid" in name.lower() or not "vid" in name.lower():
+            name = str(subkey.Name)
+            if not "PID" in name or not "VID" in name:
                 continue
             for serial in self.regapi.reg_get_all_subkeys(None, key = usb + "\\" + name):
-                serial_no = serial.Name.__str__()
+                serial_no = str(serial.Name)
                 if serial_no in self.usb_devices:
                     id_part = name.split("&")
                     self.usb_devices[serial_no]["vid"] = id_part[0][4:]
@@ -60,10 +61,11 @@ class UsbParse(common.AbstractWindowsCommand):
                     self.usb_devices[serial_no]["time"]["vid_pid"] = subkey.LastWriteTime
 
     def MountedDevices(self):
+        mounted = self.regapi.reg_yield_values(None, key = "MountedDevices", thetype = "REG_BINARY")
         for serial in self.usb_devices:
-            for value, data in self.regapi.reg_yield_values(None, key = "MountedDevices", thetype = "REG_BINARY"):
-                data = data[::2]
-                value = value.__str__()
+            for value, data in mounted:
+                data = utils.remove_unprintable(data)
+                value = str(value)
                 if "Volume" in value:
                     if "parent_prefix_id" in self.usb_devices[serial]:
                         if self.usb_devices[serial]["parent_prefix_id"] in data:
@@ -83,59 +85,51 @@ class UsbParse(common.AbstractWindowsCommand):
 
     def DeviceClasses(self):
         device_class = self.regapi.reg_get_currentcontrolset() + "\\Control\\DeviceClasses"
-        _53f56307 = self.regapi.reg_get_all_subkeys(None, key = device_class + "\\{53f56307-b6bf-11d0-94f2-00a0c91efb8b}")
-        _53f5630d = self.regapi.reg_get_all_subkeys(None, key = device_class + "\\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}")
-        for serial in self.usb_devices:
-            for subkey in _53f56307:
-                name = subkey.Name.__str__()
-                if not 'USBSTOR' in name and not serial in name:
-                    continue
-                self.usb_devices[serial]["time"]["disk_device"] = subkey.LastWriteTime
-                break
-            for subkey in _53f5630d:
-                name = subkey.Name.__str__()
-                if not 'USBSTOR' in name and not serial in name:
-                    continue
-                self.usb_devices[serial]["time"]["volume_device"] = subkey.LastWriteTime
-                break
+        for disk in self.regapi.reg_get_all_subkeys(None, key = device_class + "\\{53f56307-b6bf-11d0-94f2-00a0c91efb8b}"):
+            name = str(disk.Name)
+            if not 'USBSTOR#Disk' in name:
+                continue
+            part = name.split("USBSTOR#Disk&")[1].split("#")[1]
+            serial_part = part.split("&")
+            serial_no = serial_part[0] if len(serial_part) == 2 else part
+            if serial_no in self.usb_devices:
+                self.usb_devices[serial_no]["time"]["disk_device"] = disk.LastWriteTime
+        for volume in self.regapi.reg_get_all_subkeys(None, key = device_class + "\\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"):
+            name = str(volume.Name)
+            if not 'USBSTOR#DISK' in name:
+                continue
+            part = name.split("USBSTOR#DISK&")[1].split("#")[1]
+            serial_part = part.split("&")
+            serial_no = serial_part[0] if len(serial_part) == 2 else part
+            if serial_no in self.usb_devices:
+                self.usb_devices[serial_no]["time"]["volume_device"] = volume.LastWriteTime
 
     def WindowsPortableDevices(self):
         for subkey in self.regapi.reg_get_all_subkeys(None, key = "Microsoft\\Windows Portable Devices\\Devices"):
-            name = subkey.Name.__str__()
-            if not '_##_USBSTOR' in name and not '_??_USBSTOR' in name:
+            name = str(subkey.Name)
+            if not 'USBSTOR#DISK' in name:
                 continue
             val = self.regapi.reg_get_value(None, key = "Microsoft\\Windows Portable Devices\\Devices\\" + name, value = "FriendlyName")
-            if val != None:
-                temp = val.__str__()[:-1]
-                for serial in self.usb_devices:
-                    if "volume_name" in self.usb_devices[serial]:
-                        continue
-                    if serial in name:
-                        if "(" in temp:
-                            if not "drive_letter" in self.usb_devices[serial]:
-                                self.usb_devices[serial]["drive_letter"] = temp[temp.index("(") + 1: temp.index(")")]
-                            self.usb_devices[serial]["volume_name"] = temp[:temp.index("(")]
-                        elif ":\\" in temp:
-                            if not "drive_letter" in self.usb_devices[serial]:
-                                self.usb_devices[serial]["drive_letter"] = temp
-                        else:
-                            self.usb_devices[serial]["volume_name"] = temp
-                        break
+            if val:
+                part = name.split("USBSTOR#DISK&")[1].split("#")[1]
+                serial_part = part.split("&")
+                serial_no = serial_part[0] if len(serial_part) == 2 else part
+                if serial_no in self.usb_devices:
+                    self.usb_devices[serial_no]["volume_name"] = utils.remove_unprintable(val)
 
     def EMDMgmt(self):
         for subkey in self.regapi.reg_get_all_subkeys(None, key = "Microsoft\\Windows NT\\CurrentVersion\\EMDMgmt"):
-            name = subkey.Name.__str__()
-            if not "_##_USBSTOR#Disk&" in name and not "_??_USBSTOR#Disk&" in name or not "{53f56307-b6bf-11d0-94f2-00a0c91efb8b}" in name:
+            name = str(subkey.Name)
+            if not "USBSTOR#Disk" in name or not "{53f56307-b6bf-11d0-94f2-00a0c91efb8b}" in name:
                 continue
-            index = name.index("{53f56307-b6bf-11d0-94f2-00a0c91efb8b}") + 39
-            data = name[index:].split("_")
-            for serial in self.usb_devices:
-                if "volume_serial_no" in self.usb_devices[serial]:
-                    continue
-                if serial in name:
-                    if not "volume_name" in self.usb_devices[serial]:
-                        self.usb_devices[serial]["volume_name"] = data[0]
-                    self.usb_devices[serial]["volume_serial_no"] = data[1]
+            part = name.split("USBSTOR#Disk&")[1].split("#")
+            serial_part = part[1].split("&")
+            serial_no = serial_part[0] if len(serial_part) == 2 else part[1]
+            data = part[2][38:].split("_")
+            if serial_no in self.usb_devices:
+                if not "volume_name" in self.usb_devices[serial_no]:
+                    self.usb_devices[serial_no]["volume_name"] = data[0]
+                self.usb_devices[serial_no]["volume_serial_no"] = data[1]
 
     def MountPoints2(self):
         for serial in self.usb_devices:
@@ -144,7 +138,7 @@ class UsbParse(common.AbstractWindowsCommand):
                 continue
             for name, path in self.regapi.reg_yield_key(None, key = "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MountPoints2\\{" + self.usb_devices[serial]["guid"] + "}"):
                 part = path.split("\\")
-                user.append(part[len(part) - 2])
+                user.append(part[-2])
             self.usb_devices[serial]["associated_user"] = user
 
     def calculate(self):
@@ -152,19 +146,26 @@ class UsbParse(common.AbstractWindowsCommand):
         # system hive
         self.regapi.reset_current()
         self.regapi.set_current(hive_name = "system")
+        print "[+] parsing USBSTOR"
         self.USBSTOR()
         if self.usb_devices:
+            print "[+] parsing USB"
             self.USB()
+            print "[+] parsing MountedDevices"
             self.MountedDevices()
+            print "[+] parsing DeviceClasses"
             self.DeviceClasses()
             # software hive
             self.regapi.reset_current()
             self.regapi.set_current(hive_name = "software")
+            print "[+] parsing WindowsPortableDevices"
             self.WindowsPortableDevices()
+            print "[+] parsing EMDMgmt"
             self.EMDMgmt()
             # ntuser.dat hive
             self.regapi.reset_current()
             self.regapi.set_current(hive_name = "ntuser.dat")
+            print "[+] parsing MountPoints2"
             self.MountPoints2()
             # setupapi log - TODO
         for serial in self.usb_devices:
