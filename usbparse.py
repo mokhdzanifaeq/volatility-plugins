@@ -3,8 +3,10 @@
 import volatility.plugins.registry.registryapi as registryapi
 import volatility.plugins.common as common
 import volatility.utils as utils
+from volatility.renderers import TreeGrid
+from collections import OrderedDict
 
-class UsbParse(common.AbstractWindowsCommand):
+class UsbParser(common.AbstractWindowsCommand):
     "parse usb information from registry"
 
     def __init__(self, config, *args, **kwargs):
@@ -12,38 +14,60 @@ class UsbParse(common.AbstractWindowsCommand):
         self.regapi = None
         self.usb_devices = {}
 
+    usb_struct = [
+        "Vendor",
+        "Product",
+        "Version",
+        "Device name",
+        "VID",
+        "PID",
+        "GUID",
+        "Parent prefix ID",
+        "Drive letter",
+        "Volume name",
+        "Volume serial number",
+        "Associated user",
+        "Ven/Prod/Rev key update",
+        "VID/PID key update",
+        "Disk device update",
+        "Volume device update",
+        "Install date",
+        "First install date",
+        "Last arrival date",
+        "Last removal date"
+    ]
+
     def USBSTOR(self):
         usbstor = self.regapi.reg_get_currentcontrolset() + "\\Enum\\USBSTOR"
         for subkey in self.regapi.reg_get_all_subkeys(None, key = usbstor):
-            device = {}
-            device["time"] = {}
+            device = OrderedDict((name, "") for name in self.usb_struct)
             part = subkey.Name.split("&")
             if part[0].lower() != "disk":
                 continue
             if len(part) == 4:
-                device["vendor"] = part[1][4:]
-                device["product"] = part[2][5:]
-                device["version"] = part[3][4:]
+                device["Vendor"] = part[1][4:]
+                device["Product"] = part[2][5:]
+                device["Version"] = part[3][4:]
             for serial in self.regapi.reg_get_all_subkeys(None, key = usbstor + "\\" + subkey.Name):
-                device["time"]["ven_prod_rev"] = serial.LastWriteTime
+                device["Ven/Prod/Rev key update"] = serial.LastWriteTime
                 serial_part = serial.Name.split('&')
                 serial_no = serial_part[0] if len(serial_part) == 2 else serial.Name
                 val = self.regapi.reg_get_value(None, key = usbstor + "\\" + subkey.Name + "\\" + serial.Name, value = "FriendlyName")
                 if val:
-                    device["device_name"] = utils.remove_unprintable(val)
+                    device["Device name"] = utils.remove_unprintable(val)
                 val = self.regapi.reg_get_value(None, key = usbstor + "\\" + subkey.Name + "\\" + serial.Name, value = "ParentIdPrefix")
                 if val:
-                    device["parent_prefix_id"] = utils.remove_unprintable(val)
+                    device["Parent prefix ID"] = utils.remove_unprintable(val)
                 for properties in self.regapi.reg_get_all_subkeys(None, key = usbstor + "\\" + subkey.Name + "\\" + serial.Name + "\\Properties\\{83da6326-97a6-4088-9453-a1923f573b29}"):
                     name = str(properties.Name)
                     if "0064" in name:
-                        device["time"]["install_date"] = properties.LastWriteTime
+                        device["Install date"] = properties.LastWriteTime
                     elif "0065" in name:
-                        device["time"]["first_install_date"] = properties.LastWriteTime
+                        device["First install date"] = properties.LastWriteTime
                     elif "0066" in name:
-                        device["time"]["last_arrival_date"] = properties.LastWriteTime
+                        device["Last arrival date"] = properties.LastWriteTime
                     elif "0067" in name:
-                        device["time"]["last_removal_date"] = properties.LastWriteTime
+                        device["Last removal date"] = properties.LastWriteTime
                 self.usb_devices[serial_no] = device
 
     def USB(self):
@@ -56,9 +80,9 @@ class UsbParse(common.AbstractWindowsCommand):
                 serial_no = str(serial.Name)
                 if serial_no in self.usb_devices:
                     id_part = name.split("&")
-                    self.usb_devices[serial_no]["vid"] = id_part[0][4:]
-                    self.usb_devices[serial_no]["pid"] = id_part[1][4:]
-                    self.usb_devices[serial_no]["time"]["vid_pid"] = subkey.LastWriteTime
+                    self.usb_devices[serial_no]["VID"] = id_part[0][4:]
+                    self.usb_devices[serial_no]["PID"] = id_part[1][4:]
+                    self.usb_devices[serial_no]["VID/PID key update"] = subkey.LastWriteTime
 
     def MountedDevices(self):
         mounted = self.regapi.reg_yield_values(None, key = "MountedDevices", thetype = "REG_BINARY")
@@ -67,20 +91,20 @@ class UsbParse(common.AbstractWindowsCommand):
                 data = utils.remove_unprintable(data)
                 value = str(value)
                 if "Volume" in value:
-                    if "parent_prefix_id" in self.usb_devices[serial]:
-                        if self.usb_devices[serial]["parent_prefix_id"] in data:
-                            self.usb_devices[serial]["guid"] = value[11:-1]
+                    if self.usb_devices[serial]["Parent prefix ID"]:
+                        if self.usb_devices[serial]["Parent prefix ID"] in data:
+                            self.usb_devices[serial]["GUID"] = value[11:-1]
                     else:
                         if serial in data:
-                            self.usb_devices[serial]["guid"] = value[11:-1]
+                            self.usb_devices[serial]["GUID"] = value[11:-1]
                 if "DosDevices" in value:
-                    if "parent_prefix_id" in self.usb_devices[serial]:
-                        if self.usb_devices[serial]["parent_prefix_id"] in data:
-                            self.usb_devices[serial]["drive_letter"] = value[12:]
+                    if self.usb_devices[serial]["Parent prefix ID"]:
+                        if self.usb_devices[serial]["Parent prefix ID"] in data:
+                            self.usb_devices[serial]["Drive letter"] = value[12:]
                     else:
                         if serial in data:
-                            self.usb_devices[serial]["drive_letter"] = value[12:]
-                if "drive_letter" in self.usb_devices[serial] and "guid" in self.usb_devices[serial]:
+                            self.usb_devices[serial]["Drive letter"] = value[12:]
+                if self.usb_devices[serial]["Drive letter"] and self.usb_devices[serial]["GUID"]:
                     break
 
     def DeviceClasses(self):
@@ -93,7 +117,7 @@ class UsbParse(common.AbstractWindowsCommand):
             serial_part = part.split("&")
             serial_no = serial_part[0] if len(serial_part) == 2 else part
             if serial_no in self.usb_devices:
-                self.usb_devices[serial_no]["time"]["disk_device"] = disk.LastWriteTime
+                self.usb_devices[serial_no]["Disk device update"] = disk.LastWriteTime
         for volume in self.regapi.reg_get_all_subkeys(None, key = device_class + "\\{53f5630d-b6bf-11d0-94f2-00a0c91efb8b}"):
             name = str(volume.Name)
             if not 'USBSTOR#DISK' in name:
@@ -102,7 +126,7 @@ class UsbParse(common.AbstractWindowsCommand):
             serial_part = part.split("&")
             serial_no = serial_part[0] if len(serial_part) == 2 else part
             if serial_no in self.usb_devices:
-                self.usb_devices[serial_no]["time"]["volume_device"] = volume.LastWriteTime
+                self.usb_devices[serial_no]["Volume device update"] = volume.LastWriteTime
 
     def WindowsPortableDevices(self):
         for subkey in self.regapi.reg_get_all_subkeys(None, key = "Microsoft\\Windows Portable Devices\\Devices"):
@@ -115,7 +139,7 @@ class UsbParse(common.AbstractWindowsCommand):
                 serial_part = part.split("&")
                 serial_no = serial_part[0] if len(serial_part) == 2 else part
                 if serial_no in self.usb_devices:
-                    self.usb_devices[serial_no]["volume_name"] = utils.remove_unprintable(val)
+                    self.usb_devices[serial_no]["Volume name"] = utils.remove_unprintable(val)
 
     def EMDMgmt(self):
         for subkey in self.regapi.reg_get_all_subkeys(None, key = "Microsoft\\Windows NT\\CurrentVersion\\EMDMgmt"):
@@ -127,91 +151,57 @@ class UsbParse(common.AbstractWindowsCommand):
             serial_no = serial_part[0] if len(serial_part) == 2 else part[1]
             data = part[2][38:].split("_")
             if serial_no in self.usb_devices:
-                if not "volume_name" in self.usb_devices[serial_no]:
-                    self.usb_devices[serial_no]["volume_name"] = data[0]
-                self.usb_devices[serial_no]["volume_serial_no"] = data[1]
+                if not self.usb_devices[serial_no]["Volume name"]:
+                    self.usb_devices[serial_no]["Volume name"] = data[0]
+                self.usb_devices[serial_no]["Volume serial number"] = data[1]
 
     def MountPoints2(self):
         for serial in self.usb_devices:
             user = []
-            if not "guid" in self.usb_devices[serial]:
+            if not self.usb_devices[serial]["GUID"]:
                 continue
-            for name, path in self.regapi.reg_yield_key(None, key = "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MountPoints2\\{" + self.usb_devices[serial]["guid"] + "}"):
+            for name, path in self.regapi.reg_yield_key(None, key = "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MountPoints2\\{" + self.usb_devices[serial]["GUID"] + "}"):
                 part = path.split("\\")
                 user.append(part[-2])
-            self.usb_devices[serial]["associated_user"] = user
+            self.usb_devices[serial]["Associated user"] = ', '.join(user)
 
     def calculate(self):
         self.regapi = registryapi.RegistryApi(self._config)
         # system hive
         self.regapi.reset_current()
         self.regapi.set_current(hive_name = "system")
-        print "[+] parsing USBSTOR"
+        print "parsing system hive..."
         self.USBSTOR()
         if self.usb_devices:
-            print "[+] parsing USB"
             self.USB()
-            print "[+] parsing MountedDevices"
             self.MountedDevices()
-            print "[+] parsing DeviceClasses"
             self.DeviceClasses()
             # software hive
             self.regapi.reset_current()
             self.regapi.set_current(hive_name = "software")
-            print "[+] parsing WindowsPortableDevices"
+            print "parsing software hive..."
             self.WindowsPortableDevices()
-            print "[+] parsing EMDMgmt"
             self.EMDMgmt()
             # ntuser.dat hive
             self.regapi.reset_current()
             self.regapi.set_current(hive_name = "ntuser.dat")
-            print "[+] parsing MountPoints2"
+            print "parsing ntuser.dat hive..."
             self.MountPoints2()
             # setupapi log - TODO
         for serial in self.usb_devices:
             yield serial, self.usb_devices[serial]
 
+    def unified_output(self, data):
+        return TreeGrid([("Serial number", str)] + [(name, str) for name in self.usb_struct], self.generator(data))
+
+    def generator(self, data):
+        for serial, info in data:
+            yield (0, [str(serial)] + [str(value) for value in info.values()])
+
     def render_text(self, outfd, data):
         for serial, info in data:
             outfd.write("**************************************************\n")
-            if "vendor" in info:
-                outfd.write("vendor: {0}\n".format(info["vendor"]))
-            if "product" in info:
-                outfd.write("product: {0}\n".format(info["product"]))
-            if "version" in info:
-                outfd.write("version: {0}\n".format(info["version"]))
-            if "device_name" in info:
-                outfd.write("device name: {0}\n".format(info["device_name"]))
             outfd.write("serial no: {0}\n".format(serial))
-            if "vid" in info:
-                outfd.write("vid: {0}\n".format(info["vid"]))
-            if "pid" in info:
-                outfd.write("pid: {0}\n".format(info["pid"]))
-            if "parent_prefix_id" in info:
-                outfd.write("parent prefix id: {0}\n".format(info["parent_prefix_id"]))
-            if "drive_letter" in info:
-                outfd.write("drive letter: {0}\n".format(info["drive_letter"]))
-            if "volume_name" in info:
-                outfd.write("volume name: {0}\n".format(info["volume_name"]))
-            if "volume_serial_no" in info:
-                outfd.write("volume serial no: {0}\n".format(info["volume_serial_no"]))
-            if "guid" in info:
-                outfd.write("guid: {0}\n".format(info["guid"]))
-            if "associated_user" in info:
-                outfd.write("associated user: {0}\n".format(", ".join(info["associated_user"])))
-            if "vid_pid" in info["time"]:
-                outfd.write("vid/pid key update: {0}\n".format(info["time"]["vid_pid"]))
-            if "ven_prod_rev" in info["time"]:
-                outfd.write("ven/prod/rev key update: {0}\n".format(info["time"]["ven_prod_rev"]))
-            if "disk_device" in info["time"]:
-                outfd.write("disk device update: {0}\n".format(info["time"]["disk_device"]))
-            if "volume_device" in info["time"]:
-                outfd.write("volume device update: {0}\n".format(info["time"]["volume_device"]))
-            if "install_date" in info["time"]:
-                outfd.write("install date: {0}\n".format(info["time"]["install_date"]))
-            if "first_install_date" in info["time"]:
-                outfd.write("first install date: {0}\n".format(info["time"]["first_install_date"]))
-            if "last_arrival_date" in info["time"]:
-                outfd.write("last arrival date: {0}\n".format(info["time"]["last_arrival_date"]))
-            if "last_removal_date" in info["time"]:
-                outfd.write("last removal date: {0}\n".format(info["time"]["last_removal_date"]))
+            for name, value in info.iteritems():
+                if value:
+                    outfd.write("{0}: {1}\n".format(name, value))

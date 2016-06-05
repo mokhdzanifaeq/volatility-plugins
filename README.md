@@ -1,7 +1,7 @@
 # volatility-plugins
 plugins for volatility framework
 
-### usbparse
+### usbparser
 parse usb information from the registry
 
-![usbparse](http://i.imgur.com/yfq17EI.png)
+![usbparse](http://i.imgur.com/NgPeXME.png)
